@@ -1,0 +1,196 @@
+<project name="fx702p" default="compile">
+	
+	<property name="product.version" value="0.1a"/>
+		
+	<property name="src" location="sources"/>
+	<property name="output" location="output"/>
+	<property name="build" location="${output}/classes"/>
+	<property name="distrib" location="distrib"/>
+	<property name="distrib.windows" location="${distrib}/windows"/>
+	<property name="distrib.windows.lib" location="${distrib.windows}/lib"/>
+	<property name="distrib.osx" location="${distrib}/osx"/>
+	<property name="distrib.osx.tmp" location="${distrib.osx}/tmp"/>
+	<property name="distrib.osx.samples" location="${distrib.osx.tmp}/samples"/>
+	<property name="distrib.osx.dmg" location="${distrib}/Fx702p.dmg"/>
+	<property name="distrib.osx.template" location="${distrib.osx}/template"/>
+	<property name="distrib.osx.lib" location="${distrib.osx.tmp}/Fx702p.app/Contents/Resources/Java"/>
+	<property name="distrib.linux" location="${distrib}/linux"/>
+	<property name="distrib.linux.tmp" location="${distrib.linux}/Fx702p"/>
+	<property name="distrib.linux.lib" location="${distrib.linux.tmp}/lib"/>
+	<property name="distrib.linux.samples" location="${distrib.linux.tmp}/samples"/>
+	<property name="distrib.linux.tgz" location="${distrib}/Fx702p.tgz"/>
+	<property name="distrib.linux.template" location="${distrib.linux}/template"/>	
+	<property name="distrib.linux.script" value="Fx702p.sh"/>	
+	<property name="distrib.linux.script.src" location="${distrib.linux.template}/${distrib.linux.script}"/>	
+	<property name="programs" location="programs"/>
+	<property name="fx702pjar" location="${distrib}/fx702p.jar"/>
+	<property name="fx702p.dir" location="${src}/com/fx702p"/>
+	<property name="fx702pGrammar.dir" location="${fx702p.dir}/grammar"/>
+	<property name="fx702pParser.dir" location="${fx702p.dir}/parser"/>
+	<property name="javacc.dir" location="libs/javacc-5.0/bin/lib"/>
+	<property name="launch4j.dir" location="libs/launch4j"/>
+	<property name="pictures.dir" location="pictures"/>
+	<property name="pictures.prefix" value="pictures"/>
+	<property name="samples" value="planets.702,bases.702"/>
+	<condition property="os.osx" value="true">
+	   <os family="mac"/>
+	</condition>
+	
+	<taskdef name="launch4j"
+	    classname="net.sf.launch4j.ant.Launch4jTask"
+	    classpath="${launch4j.dir}/launch4j.jar:${launch4j.dir}/xstream.jar"/>
+
+	
+	<path id="build.classpath">
+		<fileset dir="${javacc.dir}" includes="**/*.jar"/>
+	</path>
+
+	<target name="init">
+		<mkdir dir="${output}"/>
+		<mkdir dir="${build}"/>
+		<mkdir dir="${distrib}"/>
+		<mkdir dir="${distrib.windows}"/>
+		<mkdir dir="${distrib.windows.lib}"/>
+	</target>
+	
+	<target name="compile" depends="init, fx702p_parser">
+		<javac
+			source="1.5"
+		  target="1.5"
+			srcdir="${src}"
+			destdir="${build}"
+			classpathref="build.classpath"
+			includeantruntime="false"
+			debug="true">
+		</javac>
+	</target>
+	
+	<target name="fx702p_parser" depends="fx702p_parser_tree" description="fx702p parser">
+		<javacc javacchome="${javacc.dir}"
+			target="${fx702pParser.dir}/fx702pParser.jj"
+			outputDirectory="${fx702pParser.dir}"
+		/>	
+	</target>
+	
+	<target name="fx702p_parser_tree">
+		<jjtree javacchome="${javacc.dir}"
+			target="${fx702pGrammar.dir}/fx702pParser.jjt"
+			outputDirectory="${fx702pParser.dir}"
+		/>	
+	</target>
+	
+	<target name="clean" description="clean">
+		<delete includeemptydirs="false" failonerror="no" verbose="yes">
+			<fileset dir="${build}">
+				<include name="**/*"/>
+			</fileset>
+			<fileset dir="${fx702pParser.dir}">
+				<include name="*.java"/>
+				<include name="*.jj"/>
+				<not>
+					<contains text="/*EDITED*/"/>
+				</not>	
+			</fileset>
+			<fileset file="${fx702pjar}"/>
+			<fileset file="${distrib.windows}/Fx702p.exe"/>
+			<fileset dir="${distrib.windows.lib}"/>
+			<fileset file="${distrib}/Fx702p.zip"/>
+		</delete>
+	</target>
+	
+	<target name="jar" depends="compile">
+		<jar jarfile="${fx702pjar}">
+			<manifest>
+				<attribute name="Vendor" value="Pascal Meheut"/>
+				<attribute name="Bundle-Version" value="${product.version}"/>
+				<attribute name="Bundle-SymbolicName" value="com.fx702p"/>
+				<attribute name="Main-Class" value="com.fx702p.swing.Fx702pMain"/>
+			</manifest>
+			<fileset dir="${build}">
+				<include name="**/*.class"/>
+				<exclude name="com/fx702p/test/**"/>
+			</fileset>
+			<fileset dir="${build}">
+				<include name="com/mxgraph/**"/>
+			</fileset>
+			<fileset dir="${src}">
+				<include name="com/fx702p/swing/icons/**"/>
+			</fileset>
+			<zipfileset dir="${pictures.dir}" prefix="${pictures.prefix}">
+				<include name="*.jpg"/>
+			</zipfileset>
+		</jar>
+	</target>
+	
+	<target name="build_exe" depends="jar" if="os.osx">
+		<launch4j bindir="${launch4j.dir}/mac" configFile="${distrib}/fx702p_launch4j.xml">
+		</launch4j>
+	</target>
+	
+	<target name="distrib_windows"  depends="build_exe" description="Builds Windows Distribution" if="os.osx">
+		<copy todir="${distrib.windows.lib}" overwrite="true">
+			<fileset dir="${javacc.dir}" includes="**/*.jar"/>
+			<fileset dir="${distrib}" includes="fx702p.jar"/>
+		</copy>
+	  <zip destfile="${distrib}/Fx702p.zip">
+			<zipfileset dir="${distrib.windows}" prefix="Fx702p">
+			</zipfileset>
+			<zipfileset dir="${programs}" prefix="samples" includes="${samples}">
+			</zipfileset>
+	  </zip>
+	</target>
+	
+	<target name="distrib_linux"  depends="jar" description="Builds Linux Distribution">
+		<delete includeemptydirs="true" failonerror="no" verbose="no">
+			<fileset dir="${distrib.linux.tmp}"/>
+			<fileset file="${distrib.linux.tgz}"/>
+		</delete>
+		<mkdir dir="${distrib.linux.tmp}"/>
+		<mkdir dir="${distrib.linux.samples}"/>
+		<mkdir dir="${distrib.linux.lib}"/>
+		<copy todir="${distrib.linux.tmp}" overwrite="true">
+			<fileset file="${distrib.linux.script.src}"/>
+		</copy>
+		<copy todir="${distrib.linux.lib}" overwrite="true">
+			<fileset dir="${javacc.dir}" includes="**/*.jar"/>
+			<fileset dir="${distrib}" includes="fx702p.jar"/>
+		</copy>
+		<copy todir="${distrib.linux.samples}" overwrite="true">
+			<fileset dir="${programs}" includes="${samples}"/>
+		</copy>
+	  <tar destfile="${distrib.linux.tgz}" compression="gzip">
+			<tarfileset dir="${distrib.linux.tmp}" prefix="Fx702p">
+		    <exclude name="${distrib.linux.script}"/>
+			</tarfileset> 
+			<tarfileset dir="${distrib.linux.tmp}" prefix="Fx702p" filemode="755">
+		    <include name="${distrib.linux.script}"/>
+			</tarfileset> 
+	  </tar>
+	</target>
+				
+	<target name="distrib_osx"  depends="jar" description="Builds OSX Distribution" if="os.osx">
+		<delete includeemptydirs="true" failonerror="no" verbose="no">
+			<fileset dir="${distrib.osx.tmp}"/>
+			<fileset file="${distrib.osx.dmg}"/>
+		</delete>
+		<mkdir dir="${distrib.osx.tmp}"/>
+		<mkdir dir="${distrib.osx.samples}"/>
+		<copy todir="${distrib.osx.tmp}" overwrite="true">
+			<fileset dir="${distrib.osx.template}" excludes="CVS"/>
+		</copy>
+		<chmod file="${distrib.osx.tmp}/Fx702p.app/Contents/MacOS/JavaApplicationStub" perm="a+rx"/>
+		<copy todir="${distrib.osx.lib}" overwrite="true">
+			<fileset dir="${javacc.dir}" includes="**/*.jar"/>
+			<fileset dir="${distrib}" includes="fx702p.jar"/>
+		</copy>
+		<copy todir="${distrib.osx.samples}" overwrite="true">
+			<fileset dir="${programs}" includes="${samples}"/>
+		</copy>
+		<exec executable="hdiutil">
+			<arg line="create -volname Fx702p -srcfolder ${distrib.osx.tmp} ${distrib.osx.dmg}"/>
+		</exec>
+	</target>
+	
+	<target name="distrib" depends="distrib_windows, distrib_osx, distrib_linux" description="Builds Distributions">
+	</target>
+</project>

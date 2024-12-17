@@ -1,0 +1,932 @@
+options 
+{
+  STATIC=false;
+  MULTI=true;
+  VISITOR=true;
+  NODE_DEFAULT_VOID=true;
+}
+
+PARSER_BEGIN(Fx702pParser)
+
+package com.fx702p.parser;
+
+import java.io.*;
+import java.math.BigDecimal;
+import com.fx702p.emulator.TokenHelper;
+import java.lang.Character;
+
+public class Fx702pParser
+{
+  public static void main(String args[]) throws ParseException, IOException
+  {
+    Fx702pParser parser = new Fx702pParser(new com.fx702p.Fx702pParenthesisTokenManager(new FileInputStream(args[0])));
+    parser.Program();
+  }
+  
+  public void addPosition(ASTPrint aPrintNode, Token aFirstToken, PrintSubExpressionNode aNode)
+  {
+  	aPrintNode.addSubInstructionPosition(aFirstToken.beginColumn-1, aNode);
+  }
+  
+  public void addSeparator(ASTPrint aPrintNode, Token aSeparator, PrintSubExpressionNode aNode)
+  {
+  	aPrintNode.addSubInstructionPosition(aSeparator.beginColumn-1, aNode);
+  }
+
+  public void addPosition(ASTInput anInputNode, Token aFirstToken, Node aNode)
+  {
+  	anInputNode.addSubInstructionPosition(aFirstToken.beginColumn-1, aNode);
+  }
+
+  public int checkProgramNumber(String aProgramNumber, int aLineNumber) throws ParseException
+  {	if(aProgramNumber.length()!=2 || aProgramNumber.charAt(0)!='P' || !Character.isDigit(aProgramNumber.charAt(1)))
+	{	  throw new ParseException("Invalid Program Number line "+aLineNumber+": "+aProgramNumber+", should be P[0-9]");
+	}
+	int programNumber=Character.digit(aProgramNumber.charAt(1), 10);
+	if(programNumber<=lastProgramNumber)
+	{	  throw new ParseException("Invalid Program Number"+aLineNumber+": "+programNumber+", should greater than "+lastProgramNumber);
+	}
+	lastProgramNumber=programNumber;
+	return programNumber;
+  }
+  
+  protected int lastProgramNumber=-1;
+  protected int currentProgramBeginLine=0;
+}
+
+PARSER_END(Fx702pParser)
+
+Node Calculator() :
+{}
+{
+	(
+	   // Long lookahead here because we want to distinguish the reading of a variable from a assignment
+	   // and the equal sign can be far away if the variable name is something like A$(<expression >, <expression>)
+	   // but it cannot be further away than the input buffer maximum size which is 62.
+		LOOKAHEAD(62) Assignment()
+	|	Expression()
+	|	CalculatorCommand()
+	)? ( <EOL> )* <EOF>
+	{
+	  if(jjtree.nodeArity() > 0)
+	  {
+	    return jjtree.peekNode();
+	  }
+	  else
+	  {
+	    return null;
+	  }
+	}
+}
+
+void CalculatorCommand() :
+{}
+{
+  "MODE" Expression() #Mode(1)
+|	"DEFM" Expression() #Defm(1)
+|	Run()
+|	List()
+|	"PASS" StringLiteral() #Password(1)
+|	"ROM" <INTEGER_LITERAL> #Rom(1)
+|	Set()
+|	CommandName() CommandArguments() #Command(2)
+|	CommandWithParenthesisName() CommandWithParenthesisArguments() #Command(2)
+|	IOCommand()
+}
+
+void Run() #Run :
+{}
+{
+	"RUN" [ <INTEGER_LITERAL> ]
+}
+
+void List() #List :
+{}
+{
+	"LIST" [ ListArgument() ]
+}
+
+void ListArgument() :
+{}
+{
+	StringLiteral()
+|	<INTEGER_LITERAL> [ StringLiteral() ]
+|	"#" <DIGIT>  [ StringLiteral() ]
+|	"ALL" 
+|	LOOKAHEAD({ getToken(1).kind==VARIABLE && "V".equals(getToken(1).image) }) <VARIABLE>
+}
+
+void Clear() #Clear :
+{}
+{
+	"CLR" [ "ALL" { jjtThis.all=true; } ]
+|	"CLRALL" { jjtThis.all=true; }
+}
+
+ASTProgramsFile ProgramsFile() #ProgramsFile :
+{
+	Token allPrograms;
+}
+{(   	allPrograms="All programs:" [ < STRING_LITERAL > ] [ LOOKAHEAD(2147483647) (EmptyLine())* SavedDefm() ] MultiplePrograms(allPrograms.endLine)
+|	VariablesAndProgram()
+)	{ return jjtThis; }	
+}
+
+void SavedDefm() #SavedDefm :
+{
+	Token defm;
+	ASTSavedDefm savedDefm;
+}
+{
+	defm="DEFM" IntegerLiteral() { jjtThis.jjtSetValue(defm.beginLine); }
+}
+
+void MultiplePrograms(int aBeginLine) #MultiplePrograms :
+{
+  Token programDescription, lastEOL, password=null;
+  int programNumber;
+  ASTSingleProgram singleProgram, previousSingleProgram=null;
+}
+{
+	{ jjtThis.setBeginLine(aBeginLine-1); }
+	(
+	  LOOKAHEAD(2) (Assignment() | Comment() | EmptyLine())
+	)*
+	(
+		programDescription=< INDEXED_VARIABLE > (lastEOL=<EOL>)+ { programNumber=checkProgramNumber(programDescription.image, programDescription.beginLine); }
+		[ "Password: " password=<STRING_LITERAL> (lastEOL=<EOL>)+ ]
+		[
+			{ currentProgramBeginLine=lastEOL.endLine; }
+			singleProgram=SingleProgram()
+			{			  singleProgram.setProgramNumber(programNumber);
+			  if(password!=null)
+			  {
+			    singleProgram.setPassword(password.image);
+			  }
+			  singleProgram.setBeginLine(lastEOL.endLine);
+			  if(previousSingleProgram!=null)
+			  {
+			  	previousSingleProgram.setEndLine(programDescription.beginLine-1);
+			  }
+			  else
+			  {
+			  	jjtThis.setEndLine(programDescription.beginLine-1);
+			  }
+			  previousSingleProgram=singleProgram;
+			}
+		] 
+	)+
+	<EOF>
+}
+
+ASTSingleProgram SingleProgram() #SingleProgram :
+{}
+{
+  CommentedProgram() [ Breakpoints() ] [ Watchpoints() ]
+  { return jjtThis; }}
+
+ASTVariablesAndProgram VariablesAndProgram() #VariablesAndProgram :
+{}
+{
+	(
+	  (Assignment() | Comment() | EmptyLine())
+	)*
+	[ CommentedProgram() ]
+	[ Breakpoints() ]
+	[ Watchpoints() ]
+    <EOF>
+	{ return jjtThis; }	  
+}
+
+ASTProgram CommentedProgram() #Program :
+{}
+{
+  	Line()
+	(
+		(Line() | Comment() | EmptyLine())
+	)*
+	{ return jjtThis; }
+}
+
+void EmptyLine() :
+{}
+{
+	<EOL>
+}
+
+void Breakpoints() :
+{}
+{
+  [ ProgramSignature() ( EmptyLine() )* ]
+  Breakpoint() ( Breakpoint() | EmptyLine() )*
+}
+
+void Watchpoints() :
+{}
+{
+  WatchVariable() ( WatchVariable() | EmptyLine() )*
+  [ StatWatchPoint() ( EmptyLine() ) *]
+}
+
+void ProgramSignature() #ProgramSignature :
+{
+  Token signature;
+  Token value;
+}
+{
+	signature="SIGNATURE" value=<STRING_LITERAL> <EOL>
+	{
+	  jjtThis.signature=TokenHelper.convertStringLiteral(value.image.substring(1, value.image.length()-1));
+	  jjtThis.beginLine=signature.beginLine-currentProgramBeginLine-1;
+	  jjtThis.endLine=value.endLine-currentProgramBeginLine-1;
+	}
+}
+
+void Breakpoint() #Breakpoint :
+{
+    Token line, instructionIndex, breakpoint;
+}
+{
+  breakpoint="BREAKPOINT" line= <INTEGER_LITERAL> <COMMA> instructionIndex=<INTEGER_LITERAL> <EOL>
+  {
+    jjtThis.line=Integer.parseInt(line.image);
+    jjtThis.jjtSetValue(breakpoint.beginLine);
+    jjtThis.instructionIndex=Integer.parseInt(instructionIndex.image);
+  }
+}
+
+void WatchVariable() :
+{}
+{
+	Watch()
+|	Watchpoint()
+}
+
+void Watch() #Watch :
+{
+	Token watch;
+}
+{
+  watch="WATCH" WatchedVariableDefinition() <EOL> { jjtThis.jjtSetValue(watch.beginLine); }
+}
+
+void Watchpoint() #Watchpoint :
+{
+	Token watchPoint;
+}
+{
+  watchPoint="WATCHPOINT" WatchedVariableDefinition() <EOL> { jjtThis.jjtSetValue(watchPoint.beginLine); }
+}
+
+
+void StatWatchPoint() #StatWatchpoint :
+{}
+{
+  "STATWATCHPOINT" <EOL>
+}
+
+ASTProgram Program() #Program :
+{}
+{
+	(
+		Line()
+	)+
+	{ return jjtThis; }
+}
+
+void Comment() #Comment :
+{}
+{
+	<COMMENT_SLASH_SLASH>
+| 	<COMMENT_SLASH_STAR>
+| 	<COMMENT_BACKSLASH_STAR>
+}
+
+void Line() #Line :
+{
+	Token line;
+	Token separator;
+}
+{
+	line=<INTEGER_LITERAL>
+	{
+	  jjtThis.addLine(Integer.parseInt(line.image), line.endColumn-1, line.beginLine-currentProgramBeginLine-1);
+	}
+	Instruction(jjtThis)
+	( separator=<SEPARATOR>
+	{
+	  jjtThis.addInstructionPosition(separator.beginColumn-1);
+	}
+	Instruction(jjtThis) )* ( <EOL> | <EOF> )
+}
+
+
+void Instruction(ASTLine line) :
+{}
+{
+	Assignment()
+|	Command()
+|	If(line)
+|	For()
+|	Next()
+}	
+
+void Assignment() #Assignment :
+{
+	Token equal;
+}
+{
+	Variable() equal=<EQ> Expression() { jjtThis.jjtSetValue(equal.endLine); }
+}
+
+Node Expression() :
+{}
+{
+	AdditiveExpression()
+	{
+		return jjtree.peekNode();
+	}
+}
+
+void AdditiveExpression() :
+{}
+{
+	MultiplicativeExpression()
+	( 
+		<PLUS> MultiplicativeExpression() #Addition(2)
+	|	<MINUS> MultiplicativeExpression() #Substraction(2)
+	)*
+}
+
+void MultiplicativeExpression() :
+{}
+{
+	UnaryExpression()
+	(
+		<STAR> UnaryExpression() #Multiplication(2)
+	|	<SLASH> UnaryExpression() #Division(2)
+  )*
+}
+
+void UnaryExpression() :
+{}
+{
+	PowerExpression()
+|	<MINUS> UnaryExpression() #UnaryMinus(1)
+|   <PLUS> UnaryExpression()
+}
+
+void PowerExpression() :
+{}
+{
+	PrimaryExpression() ( "^" PrimaryExpression() #Power(2) | "!" #Factorial(1) )*
+}
+
+void PrimaryExpression() :
+{}
+{
+	Literal()
+|	Variable() 
+|	Function()
+|	SubExpression()
+}
+
+void SubExpression() :
+{}
+{
+	LOOKAHEAD(ClosedSubExpression())
+	ClosedSubExpression()
+|   OpenSubExpression()	
+}
+
+void ClosedSubExpression() #ClosedSubExpression :
+{}
+{
+	<OPEN_PARENTHESIS> Expression() <CLOSE_PARENTHESIS>
+}
+
+void OpenSubExpression() #OpenSubExpression :
+{}
+{
+	<OPEN_PARENTHESIS> Expression() <CLOSE_VIRTUAL_PARENTHESIS>
+}
+
+void Literal() :
+{
+	Token pi;
+}
+{
+	IntegerLiteral()
+|	FloatLiteral()
+|	StringLiteral()
+|	pi=<PI> { jjtThis.delta=pi.image.length()-1; } #Pi
+}
+
+void IntegerLiteral() #Integer :
+{
+	Token integerLiteral;
+}
+{
+	integerLiteral=<INTEGER_LITERAL> 
+	{ 
+	  jjtThis.value=new BigDecimal(integerLiteral.image);
+	  jjtThis.image=integerLiteral.image; 
+	} 
+}
+
+void FloatLiteral() #Float :
+{
+	Token floatLiteral;
+	String realImage;
+}
+{
+	floatLiteral=<FLOAT_LITERAL>
+	{ 
+	  realImage=TokenHelper.convertFloatLiteral(floatLiteral.image);
+	  jjtThis.value=new BigDecimal(realImage);
+	  jjtThis.delta=floatLiteral.image.length()-realImage.length();
+	  jjtThis.image=floatLiteral.image; 
+	} 
+}
+
+void StringLiteral() #String :
+{
+	Token stringLiteral;
+}
+{
+	stringLiteral=<STRING_LITERAL> 
+	{ 
+	  jjtThis.value=TokenHelper.convertStringLiteral(stringLiteral.image.substring(1, stringLiteral.image.length()-1));
+	  jjtThis.delta=stringLiteral.image.length()-2-jjtThis.value.length(); 
+	  jjtThis.image=stringLiteral.image;
+	} 
+}
+
+void Variable() :
+{}
+{
+	NormalVariable()
+|	IndexedVariable()
+|	<DOLLAR> #Dollar
+}
+
+void NormalVariable() #Variable :
+{
+	Token variable;
+}
+{
+	 variable=<VARIABLE> [ LOOKAHEAD(2) <DOLLAR> { jjtThis.isString=true; } ]
+	[ <OPEN_PARENTHESIS> Expression() [ <COMMA> Expression() ] <CLOSE_PARENTHESIS> ] 
+	{ jjtThis.name=variable.image; }
+}
+
+void IndexedVariable() #IndexedVariable :
+{
+	Token indexedVariable;
+}
+{
+	indexedVariable=<INDEXED_VARIABLE> [ LOOKAHEAD(2) <DOLLAR> { jjtThis.isString=true; } ] { jjtThis.name=indexedVariable.image; }
+}
+
+Node WatchedVariable() :
+{}
+{
+( WatchedVariableDefinition() )? ( <EOL> )* <EOF>
+	{
+	  if(jjtree.nodeArity() > 0)
+	  {
+	    return jjtree.peekNode();
+	  }
+	  else
+	  {
+	    return null;
+	  }
+	}
+}
+
+void WatchedVariableDefinition() :
+{}
+{
+	  	WatchedNormalVariable()
+	|	IndexedVariable()
+	|	<DOLLAR> #Dollar
+}
+
+void WatchedNormalVariable() #Variable :
+{
+	Token variable;
+}
+{
+	 variable=<VARIABLE> [ LOOKAHEAD(2) <DOLLAR> { jjtThis.isString=true; } ]
+	[ <OPEN_PARENTHESIS> IntegerLiteral() [ <COMMA> IntegerLiteral() ] <CLOSE_PARENTHESIS> ] 
+	{ jjtThis.name=variable.image; }
+}
+
+void Function() #FunctionCall :
+{}
+{
+	FunctionName() FunctionArgument()
+|	FunctionWithParenthesisName() FunctionWithParenthesisArgument()
+}
+
+void FunctionArgument() #FunctionArguments :
+{}
+{
+	[ LOOKAHEAD(2) PrimaryExpression() ]
+}
+
+void FunctionWithParenthesisArgument() #FunctionWithParenthesisArguments :
+{}
+{
+	<OPEN_PARENTHESIS> Expression() ( <COMMA> Expression() )*  <CLOSE_PARENTHESIS>
+}
+
+void FunctionName() :
+{}
+{
+	"RAN#" #Random
+|	"CNT" #Cnt
+|	"SDX" #Sdx
+|	"SDY" #Sdy
+|	"SDXN" #Sdxn
+|	"SDYN" #Sdyn
+|	"MX" #Mx
+|	"MY" #My
+|	"SX" #Sx
+|	"SY" #Sy
+|	"SX2" #Sx2
+|	"SY2" #Sy2
+|	"SXY" #Sxy
+|	"LRA" #Lra
+|	"LRB" #Lrb
+|	"COR" #Cor
+|	"KEY" #Key
+|	"SIN" #Sin
+|	"COS" #Cos
+|	"TAN" #Tan
+|	"ASN" #ArcSin
+|	"ACS" #ArcCos
+|	"ATN" #ArcTan
+|	"HSN" #HyperbolicSin
+|	"HCS" #HyperbolicCos
+|	"HTN" #HyperbolicTan
+|	"AHS" #ArcHyperbolicSin
+|	"AHC" #ArcHyperbolicCos
+|	"AHT" #ArcHyperbolicTan
+|	"SQR" #Sqrt
+|	"EXP" #Exp
+|	"LN" #Ln
+|	"LOG" #Log
+|	"INT" #Int
+|	"FRAC" #Frac
+|	"ABS" #Abs
+|	"SGN" #Sign
+|	"EOX" #Eox
+|	"EOY" #Eoy
+}
+
+void FunctionWithParenthesisName() :
+{}
+{
+	"LEN" #Length
+|	"MID" #Mid
+|	"RND" #Round
+}
+
+void Command() :
+{}
+{
+	GotoOrGsb()
+|	Return()
+|	Print()
+|	Input()
+|	"MODE" Expression() #Mode(1)
+|	Set()
+|	CommandName() CommandArguments() #Command(2)
+|	CommandWithParenthesisName() CommandWithParenthesisArguments() #Command(2)
+|	IOCommand()
+}
+
+void GotoOrGsb() :
+{
+}
+{
+	LOOKAHEAD(2) "GOTO" Expression() #Goto(1)
+|	"GOTO" "#" Expression() #GotoProgram(1)
+|	LOOKAHEAD(2) "GSB" Expression() #Gsb(1)
+|	"GSB" "#" Expression() #GsbProgram(1)
+}
+
+void Return() #Return :
+{}
+{
+	"RET"
+}
+
+void Print() #Print :
+{
+  Token prt;
+}
+{
+	prt="PRT" { jjtThis.setLineIndexInSourceCode(prt.beginLine-currentProgramBeginLine-1); }
+	[ PrtFormat(jjtThis) <SEMICOLON> ]
+	[ PrtExpressionOrCsr(jjtThis) (  PrtNextExpression(jjtThis) )* ] 
+}
+	
+void PrtFormat(ASTPrint aPrintNode) #PrintFormat :
+{
+	Token format;
+}
+{
+	(format=<PRINT_FORMAT> | format="#" ){ jjtThis.format=format.image; addPosition(aPrintNode, format, jjtThis); }
+}
+
+void PrtExpressionOrCsr(ASTPrint aPrintNode) :
+{}
+{
+	PrtExpression(aPrintNode) | Csr(aPrintNode)
+}
+	
+void PrtExpression(ASTPrint aPrintNode) #PrtExpression :
+{
+  Token first;
+}
+{
+	{ first=getToken(1); } Expression() { addPosition(aPrintNode, first, jjtThis); } 
+}
+
+void Csr(ASTPrint aPrintNode) #Csr :
+{
+  Token first;
+}
+{
+	first="CSR" { addPosition(aPrintNode, first, jjtThis); } Expression()
+}
+
+void PrtNextExpression(ASTPrint aPrintNode) :
+{
+	Token separator;
+}
+{
+	LOOKAHEAD( { getToken(2).kind==SEPARATOR || getToken(2).kind==EOL || getToken(2).kind==EOF } )
+	 (  separator=<COMMA> { addSeparator(aPrintNode, separator, jjtThis); }  #Comma | 
+	 separator=<SEMICOLON> { addSeparator(aPrintNode, separator, jjtThis); } #Semicolon )
+	| (separator=<COMMA> { addSeparator(aPrintNode, separator, jjtThis); } #Comma 
+	| separator=<SEMICOLON> { addSeparator(aPrintNode, separator, jjtThis); } #Semicolon)
+	[ PrtFormat(aPrintNode) <SEMICOLON> ] PrtExpressionOrCsr(aPrintNode)
+}
+
+void Input() #Input :
+{
+	Token first;
+	Token input;
+	Token comma;
+	ASTInputVariable variable;
+}
+{
+	 input="INP"  { jjtThis.setLineIndexInSourceCode(input.beginLine-currentProgramBeginLine-1); first=getToken(1);  } [ StringLiteral() #InputPrompt(1) <COMMA> ]
+	 variable=InputVariable() { addPosition(jjtThis, first, variable); }
+	( comma=<COMMA> { addPosition(jjtThis, comma, null); first=getToken(1); } [ StringLiteral() #InputPrompt(1) <COMMA> ]
+	variable=InputVariable() { addPosition(jjtThis, first, variable); } )*
+}
+
+ASTInputVariable InputVariable() #InputVariable :
+{}
+{
+	Variable() 	{ return jjtThis; }	 
+}
+
+void Set() #Set :
+{
+	Token format;
+}
+{
+	"SET" 
+	( format=<VARIABLE> | format=<INDEXED_VARIABLE> | format=<INTEGER_LITERAL> ) 
+	{ jjtThis.format=format.image; }
+}
+
+void CommandName() :
+{}
+{
+	"VAC" #Vac
+|	"SAC" #Sac
+|	"STOP" #Stop
+|	"END" #End
+|	"WAIT" #Wait
+| 	"STAT" #Stat
+|   "DEL" #Del
+|	"RPC" #RPC
+|	"PRC" #PRC
+|	"DMS" #DMS
+}
+
+void CommandWithParenthesisName() :
+{}
+{
+	"DEG" #Deg
+}
+
+ASTCommandArguments CommandArguments() #CommandArguments :
+{}
+{
+	[ Expression() ( <COMMA> Expression() )* ] { return jjtThis; }
+}
+
+void CommandWithParenthesisArguments() #CommandWithParenthesisArguments :
+{}
+{
+	<OPEN_PARENTHESIS> [ Expression() ( <COMMA> Expression() )* ] <CLOSE_PARENTHESIS>
+}
+
+void IOCommand() :
+{}
+{
+	Load()
+|	Save()
+|	Verify()
+| 	Get()
+|	Put()
+}
+
+void Load() #Load :
+{}
+{
+	"LOAD" [ "ALL" | "#" <DIGIT> ] [ StringLiteral() ]
+}
+
+void Save() #Save :
+{}
+{
+	"SAVE" [ "ALL" | "#" <DIGIT> ] [ StringLiteral() ]
+}
+
+void Verify() #Verify :
+{}
+{
+	"VER" [ StringLiteral() ]
+}
+
+void Get() #Get :
+{}
+{
+	"GET" [ StringLiteral() ] Variable() [ <COMMA> Variable() ]
+}
+
+void Put() #Put :
+{}
+{
+	"PUT" [ StringLiteral() ]  Variable() [ <COMMA> Variable() ]
+}
+
+void If(ASTLine line) : 
+{}
+{
+	(LOOKAHEAD(IfThen()) IfThen() | IfSemicolon(line))
+}
+
+
+// The problem is that we want IF condition ; to be read as an instruction by itself 
+// and the instruction after the ; to be on the normal line list
+// As the line needs semicolons to separate the instructions, this is not easy to parse
+// So we manipulate the jjtree stack ourselves, creating the ASTIf node with just the
+// comparison child and letting the instruction after if it exists on the stack
+// but before. This way, ASTLine node construction consumes them in the correct order
+void IfSemicolon(ASTLine line) #If(0) : 
+{
+	Token semicolon;
+	Node comparison, ifNode, instruction;
+}
+{
+	"IF" (Comparison() { comparison=jjtree.popNode(); jjtThis.jjtAddChild(comparison, 0);})  semicolon=<SEMICOLON>
+	{
+	  line.addInstructionPosition(semicolon.beginColumn-1);
+	}
+	(Instruction(line))? { 
+
+		if(jjtree.nodeArity()>=2) {
+			instruction=jjtree.popNode(); ifNode=jjtree.popNode(); jjtree.pushNode(instruction); jjtree.pushNode(ifNode); 
+		}
+	}
+}
+
+void IfThen() #If :
+{
+	Token digit;
+}
+{
+	"IF" Comparison() 
+ 	(
+		LOOKAHEAD(2) "THEN" Expression() #Goto(1)
+		| "THEN" "#" Expression() #GotoProgram(1)
+  )
+}
+
+
+void Comparison() :
+{}
+{
+	Expression() ( 
+	<EQ> Expression() #Equal(2)
+|	<NE> Expression() #NotEqual(2)
+|	<GT> Expression() #Greater(2)
+|	<LT> Expression() #Lesser(2)
+|	<GE> Expression() #GreaterOrEqual(2)
+|	<LE> Expression() #LesserOrEqual(2))
+}
+
+void For() #For :
+{}
+{
+	"FOR" Variable() <EQ> Expression() "TO" Expression() [ "STEP" Expression() ]
+}
+
+void Next() #Next :
+{}
+{
+	"NEXT" Variable()
+}
+
+SKIP : /* WHITE SPACE */
+{
+	" "
+|	"\t"
+|	"\f"
+}
+
+TOKEN : /* PRINT FORMAT */
+{
+	< PRINT_FORMAT: ("#")+ ( "." ("#")+  ("^")? )? >
+}
+
+TOKEN : /* LITERALS */
+{
+	< INTEGER_LITERAL: (<DIGIT>)+ >
+|	< FLOAT_LITERAL: (<INTEGER_LITERAL>)? "." <INTEGER_LITERAL> ( ( "e" | "E" | "\\e" | "\\E" ) ("-")? <INTEGER_LITERAL> )?
+	|	<INTEGER_LITERAL> ( "e" | "E" | "\\e" | "\\E" ) ("-")? <INTEGER_LITERAL>  >
+|	< STRING_LITERAL: "\"" (~["\""])* "\"" >
+|	< DOLLAR: "$" >
+}
+
+TOKEN : /* DELIMITERS */
+{
+	< OPEN_PARENTHESIS: "(" >
+|	< CLOSE_PARENTHESIS: ")" >
+|	< CLOSE_VIRTUAL_PARENTHESIS: "]" >
+|	< SEPARATOR: ":" >
+|	< COMMA: "," >
+|	< SEMICOLON: ";" >
+|	< EOL: ("\r" | "\n" | "\r\n") > 
+}
+
+TOKEN : /* COMPARISONS */
+{
+	< EQ: "=" >
+|	< NE: ( "<>" | "\\=") >
+|	< GT: ">" >
+|	< LT: "<" >
+|	< GE: ( ">=" | "\\>") >
+|	< LE: ( "<=" | "\\<") >
+}
+
+TOKEN : /* IDENTIFIERS */
+{
+	< VARIABLE: <LETTER> >
+|	< INDEXED_VARIABLE: <LETTER> <DIGIT> >
+|	< PI: ( "PI" | "p" | "\\p" | "\\P" ) >
+|	< #LETTER: [ "A"-"Z" ] >
+|	< DIGIT: [ "0"-"9" ] >
+}
+
+TOKEN :
+{
+  <  COMMENT_SLASH_SLASH: "//" > : WithinComment
+}
+
+TOKEN :
+{
+  <  COMMENT_SLASH_STAR: "/*" > : WithinComment
+}
+
+TOKEN :
+{
+  <  COMMENT_BACKSLASH_STAR: "\\*" > : WithinComment
+}
+
+<WithinComment> SKIP :
+{
+  <COMMENTEND: <EOL>> : DEFAULT
+}
+
+<WithinComment> MORE :
+{
+  <~[]>
+}
+    
+TOKEN : /* 4 OPERATORS */
+{
+	< PLUS : "+" >
+| 	< MINUS : "-" >
+| 	< STAR : "*" >
+| 	< SLASH : "/" >
+}
